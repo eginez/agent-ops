@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_SRC="${OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.json}"
 SANDBOX_NAME=""
 AGENT="opencode"
-ALLOW_HOSTS=()
 NO_PROMPT=0
 DRY_RUN=0
 VERBOSE=0
@@ -18,10 +16,9 @@ usage() {
   echo
   echo "Options:"
   echo "  --config PATH       override config path"
-  echo "  --name NAME         sandbox name (default: opencode-<repo>)"
+  echo "  --name NAME         sandbox name (default: current dir name)"
   echo "  --agent NAME        agent name (default: opencode)"
-  echo "  --workdir PATH      workspace directory (default: repo root)"
-  echo "  --allow-host HOST   allowlist host (repeatable)"
+  echo "  --workdir PATH      workspace directory (default: current dir)"
   echo "  -y                  disable interactive prompts"
   echo "  --dry-run           print commands without running"
   echo "  -v, --verbose       show detailed output"
@@ -30,70 +27,66 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --config)
-      CONFIG_SRC="$2"
-      shift 2
-      ;;
-    --name)
-      SANDBOX_NAME="$2"
-      shift 2
-      ;;
-    --agent)
-      AGENT="$2"
-      shift 2
-      ;;
-    --workdir)
-      WORKDIR="$2"
-      shift 2
-      ;;
-    --allow-host)
-      ALLOW_HOSTS+=("$2")
-      shift 2
-      ;;
-    -y)
-      NO_PROMPT=1
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --config)
+    CONFIG_SRC="$2"
+    shift 2
+    ;;
+  --name)
+    SANDBOX_NAME="$2"
+    shift 2
+    ;;
+  --agent)
+    AGENT="$2"
+    shift 2
+    ;;
+  --workdir)
+    WORKDIR="$2"
+    shift 2
+    ;;
+  -y)
+    NO_PROMPT=1
+    shift 1
+    ;;
+  --dry-run)
+    DRY_RUN=1
+    shift 1
+    ;;
+  -v | --verbose)
+    VERBOSE=1
+    shift 1
+    ;;
+  --)
+    shift
+    break
+    ;;
+  -*)
+    echo "Error: unknown option $1" >&2
+    usage
+    exit 2
+    ;;
+  *)
+    if [[ -z "$SANDBOX_NAME" ]]; then
+      SANDBOX_NAME="$1"
       shift 1
-      ;;
-    --dry-run)
-      DRY_RUN=1
-      shift 1
-      ;;
-    -v|--verbose)
-      VERBOSE=1
-      shift 1
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      echo "Error: unknown option $1" >&2
+    else
+      echo "Error: unexpected argument $1" >&2
       usage
       exit 2
-      ;;
-    *)
-      if [[ -z "$SANDBOX_NAME" ]]; then
-        SANDBOX_NAME="$1"
-        shift 1
-      else
-        echo "Error: unexpected argument $1" >&2
-        usage
-        exit 2
-      fi
-      ;;
+    fi
+    ;;
   esac
 done
 
 if [[ -z "$WORKDIR" ]]; then
-  WORKDIR="$REPO_DIR"
+  WORKDIR="$(pwd)"
 fi
 
 if [[ -z "$SANDBOX_NAME" ]]; then
-  SANDBOX_NAME="${AGENT}-$(basename "$WORKDIR")"
+  SANDBOX_NAME="$(basename "$WORKDIR")"
 fi
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -136,11 +129,15 @@ vlog() {
   fi
 }
 
-vlog "Repo: $REPO_DIR"
 vlog "Workdir: $WORKDIR"
 vlog "Config: $CONFIG_SRC"
 vlog "Sandbox: $SANDBOX_NAME"
 vlog "Agent: $AGENT"
+
+if ! command -v jq >/dev/null 2>&1; then
+  err "jq not found"
+  exit 1
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
   err "docker CLI not found"
@@ -181,38 +178,12 @@ run_cmd() {
   "$@"
 }
 
-CONFIG_BASE_LINE="$(grep -Eo '"baseURL"\s*:\s*"[^"]+"' "$CONFIG_SRC" | { IFS= read -r line; printf '%s' "$line"; })"
-if [[ -n "$CONFIG_BASE_LINE" ]]; then
-  CONFIG_BASE_URL="${CONFIG_BASE_LINE#*\"}"
-  CONFIG_BASE_URL="${CONFIG_BASE_URL#*\"}"
-  CONFIG_BASE_URL="${CONFIG_BASE_URL%\"}"
-  CONFIG_BASE_HOST="${CONFIG_BASE_URL#*://}"
-  CONFIG_BASE_HOST="${CONFIG_BASE_HOST%%/*}"
-  if [[ -n "$CONFIG_BASE_HOST" ]]; then
-    if [[ $VERBOSE -eq 1 ]]; then
-      info "Allowlist suggestion:"
-      log "  docker sandbox network proxy $SANDBOX_NAME --allow-host $CONFIG_BASE_HOST"
-    fi
-    if [[ $NO_PROMPT -eq 0 && $DRY_RUN -eq 0 ]]; then
-      read -r -p "Allowlist host $CONFIG_BASE_HOST? [y/N] " reply
-      if [[ "$reply" == "y" || "$reply" == "Y" ]]; then
-        ALLOW_HOSTS+=("$CONFIG_BASE_HOST")
-      fi
-    fi
-  fi
-fi
-
-
 info "Ensuring sandbox exists: $SANDBOX_NAME"
-CREATE_OUT=""
 CREATE_OK=0
 if [[ $DRY_RUN -eq 1 ]]; then
   run_cmd docker sandbox create --name "$SANDBOX_NAME" "$AGENT" "$WORKDIR"
 else
-  CREATE_OUT="$(docker sandbox create --name "$SANDBOX_NAME" "$AGENT" "$WORKDIR" 2>&1)" || CREATE_OK=$?
-  if [[ $CREATE_OK -eq 0 && $VERBOSE -eq 1 && -n "$CREATE_OUT" ]]; then
-    log "$CREATE_OUT"
-  fi
+  docker sandbox create --name "$SANDBOX_NAME" "$AGENT" "$WORKDIR" || CREATE_OK=$?
 fi
 
 if [[ $CREATE_OK -ne 0 ]]; then
@@ -224,21 +195,36 @@ if [[ $CREATE_OK -ne 0 ]]; then
   fi
 fi
 
-if [[ ${#ALLOW_HOSTS[@]} -gt 0 ]]; then
-  for host in "${ALLOW_HOSTS[@]}"; do
-    run_cmd docker sandbox network proxy "$SANDBOX_NAME" --allow-host "$host" || {
-      warn "could not allowlist host $host"
-    }
-  done
-fi
+run_cmd docker sandbox network proxy "$SANDBOX_NAME" \
+  --policy allow \
+  --bypass-cidr 10.0.0.0/8 \
+  --bypass-cidr 192.168.0.0/16 \
+  --bypass-cidr 127.0.0.0/8 \
+  --bypass-cidr "::1/128" \
+  --bypass-cidr "fc00::/7" \
+  --bypass-cidr "fe80::/10" || {
+  warn "could not set network policy to allow for sandbox $SANDBOX_NAME"
+}
 
 run_cmd docker sandbox exec "$SANDBOX_NAME" sh -c 'mkdir -p ~/.config/opencode'
 if [[ $DRY_RUN -eq 1 ]]; then
-  vlog "DRY-RUN: docker sandbox exec -i $SANDBOX_NAME sh -c 'cat > ~/.config/opencode/opencode.json' < $CONFIG_SRC"
+  vlog "DRY-RUN: jq '...' $CONFIG_SRC | docker sandbox exec -i $SANDBOX_NAME sh -c 'cat > ~/.config/opencode/opencode.json'"
 else
-  docker sandbox exec -i "$SANDBOX_NAME" sh -c 'cat > ~/.config/opencode/opencode.json' < "$CONFIG_SRC"
+  jq '.agent.build.permission = "allow"' "$CONFIG_SRC" \
+    | docker sandbox exec -i "$SANDBOX_NAME" sh -c 'cat > ~/.config/opencode/opencode.json'
 fi
-success "Copied config to ~/.config/opencode/opencode.json"
+success "Copied config to ~/.config/opencode/opencode.json (with yolo permissions)"
+
+# Node.js native fetch (undici) does not respect HTTP_PROXY/HTTPS_PROXY by default.
+# Inject a startup script that installs EnvHttpProxyAgent as the global dispatcher.
+run_cmd docker sandbox exec -i "$SANDBOX_NAME" sh -c \
+  'cat > ~/.node-proxy-setup.cjs << '"'"'EOF'"'"'
+const { setGlobalDispatcher, EnvHttpProxyAgent } = require("undici");
+setGlobalDispatcher(new EnvHttpProxyAgent());
+EOF'
+run_cmd docker sandbox exec -i "$SANDBOX_NAME" sh -c \
+  'echo "export NODE_OPTIONS=\"--require \$HOME/.node-proxy-setup.cjs\"" >> ~/.bashrc && echo "export NODE_OPTIONS=\"--require \$HOME/.node-proxy-setup.cjs\"" >> ~/.profile'
+success "Configured Node.js to use HTTP proxy for fetch"
 
 if [[ $VERBOSE -eq 1 ]]; then
   run_cmd docker sandbox exec "$SANDBOX_NAME" sh -c 'ls -l ~/.config/opencode/opencode.json'
