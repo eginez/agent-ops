@@ -94,6 +94,8 @@ generate_prompt() {
 PROMPT_EOF
 }
 
+SERVE_PORT=4096
+
 # ---- Run One Iteration ----
 
 run_iteration() {
@@ -101,6 +103,7 @@ run_iteration() {
   local timestamp
   timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
   local log_file="${LOG_DIR}/iteration-${i}-${timestamp}.log"
+  local server_url="http://localhost:${SERVE_PORT}"
 
   echo -e "${BLUE}[loop]${NC} ═══════════════════════════════════════════"
   echo -e "${BLUE}[loop]${NC} Iteration ${i} of ${MAX_ITERATIONS}"
@@ -109,31 +112,61 @@ run_iteration() {
   local prompt
   prompt=$(generate_prompt)
 
-  docker sandbox exec -it "${SANDBOX_NAME}" \
-    opencode run --dir . "${prompt}" 2>&1 | tee "${log_file}"
+  # Start server only if not already listening on the port.
+  if ! docker sandbox exec "${SANDBOX_NAME}" \
+      sh -c "curl -sf ${server_url} > /dev/null 2>&1"; then
+    echo -e "${BLUE}[loop]${NC} Starting opencode server..."
+    docker sandbox exec --detach "${SANDBOX_NAME}" \
+      opencode serve --port "${SERVE_PORT}"
+    echo -e "${BLUE}[loop]${NC} Waiting for opencode server..."
+    until docker sandbox exec "${SANDBOX_NAME}" \
+        sh -c "curl -sf ${server_url} > /dev/null 2>&1"; do
+      sleep 1
+    done
+  else
+    echo -e "${BLUE}[loop]${NC} opencode server already running."
+  fi
 
-  local exit_code=${PIPESTATUS[0]}
+  local sandbox_log="/tmp/oc-iteration-${i}.log"
+
+  # Send prompt detached; append EXIT sentinel when done.
+  docker sandbox exec --detach "${SANDBOX_NAME}" \
+    sh -c "opencode run --attach ${server_url} --dir . \"${prompt}\" > ${sandbox_log} 2>&1; echo \"EXIT:\$?\" >> ${sandbox_log}"
+
+  echo -e "${BLUE}[loop]${NC} Agent running. To attach:"
+  echo -e "${BLUE}[loop]${NC}   docker sandbox exec -it ${SANDBOX_NAME} opencode attach ${server_url}"
+
+  # Poll for EXIT sentinel.
+  until docker sandbox exec "${SANDBOX_NAME}" grep -q "^EXIT:" "${sandbox_log}" 2>/dev/null; do
+    sleep 5
+  done
+
+  docker sandbox exec "${SANDBOX_NAME}" cat "${sandbox_log}" > "${log_file}"
+
+  local exit_line
+  exit_line=$(grep "^EXIT:" "${log_file}" | tail -1)
+  local exit_code="${exit_line#EXIT:}"
 
   # Parse status signal
   if grep -q '<promise>COMPLETE</promise>' "${log_file}"; then
-    echo -e "${GREEN}[loop]${NC} ✅ ALL TASKS COMPLETE"
+    echo -e "${GREEN}[loop]${NC} ALL TASKS COMPLETE"
     return 1
   elif grep -q '<promise>BLOCKED:' "${log_file}"; then
     local reason
     reason=$(grep -o '<promise>BLOCKED:[^<]*</promise>' "${log_file}" | sed 's/<promise>BLOCKED://;s/<\/promise>//')
-    echo -e "${RED}[loop]${NC} 🚫 BLOCKED: ${reason}"
+    echo -e "${RED}[loop]${NC} BLOCKED: ${reason}"
     return 1
   elif grep -q '<promise>DECIDE:' "${log_file}"; then
     local question
     question=$(grep -o '<promise>DECIDE:[^<]*</promise>' "${log_file}" | sed 's/<promise>DECIDE://;s/<\/promise>//')
-    echo -e "${YELLOW}[loop]${NC} ❓ DECISION NEEDED: ${question}"
+    echo -e "${YELLOW}[loop]${NC} DECISION NEEDED: ${question}"
     return 1
   elif grep -q '<promise>PROGRESS</promise>' "${log_file}"; then
-    echo -e "${GREEN}[loop]${NC} ✔ Task completed, continuing..."
+    echo -e "${GREEN}[loop]${NC} Task completed, continuing..."
     return 0
   else
-    echo -e "${YELLOW}[loop]${NC} ⚠ No status signal (exit code: ${exit_code})"
-    if [[ ${exit_code} -ne 0 ]]; then
+    echo -e "${YELLOW}[loop]${NC} No status signal (exit code: ${exit_code})"
+    if [[ "${exit_code}" -ne 0 ]]; then
       echo -e "${RED}[loop]${NC} Agent exited with error. Stopping."
       return 1
     fi
@@ -144,14 +177,7 @@ run_iteration() {
 
 # ---- Main ----
 
-main() {
-  echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
-  echo -e "${BLUE}║      Rudder Loop — Ralph Style       ║${NC}"
-  echo -e "${BLUE}║  Iterations: $(printf '%-3s' ${MAX_ITERATIONS})                      ║${NC}"
-  echo -e "${BLUE}║  Sandbox: $(printf '%-25s' ${SANDBOX_NAME})║${NC}"
-  echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
-  echo ""
-
+loop_body() {
   for ((i = 1; i <= MAX_ITERATIONS; i++)); do
     if ! run_iteration "$i"; then
       echo -e "${BLUE}[loop]${NC} Loop stopped at iteration ${i}."
@@ -168,6 +194,24 @@ main() {
   echo -e "${BLUE}[loop]${NC} Done. Logs: ${LOG_DIR}/"
   echo -e "${BLUE}[loop]${NC} Progress:   cat progress.txt"
   echo -e "${BLUE}[loop]${NC} Remaining:  cat documents/tasks/tasks.json | jq '.tasks[] | select(.passes==false)'"
+}
+
+main() {
+  echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
+  echo -e "${BLUE}║      Rudder Loop — Ralph Style       ║${NC}"
+  echo -e "${BLUE}║  Iterations: $(printf '%-3s' ${MAX_ITERATIONS})                      ║${NC}"
+  echo -e "${BLUE}║  Sandbox: $(printf '%-25s' ${SANDBOX_NAME})║${NC}"
+  echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
+  echo ""
+
+  local loop_log="${LOG_DIR}/loop.log"
+  loop_body >> "${loop_log}" 2>&1 &
+  local loop_pid=$!
+  disown "${loop_pid}"
+
+  echo -e "${BLUE}[loop]${NC} Running in background (PID: ${loop_pid})"
+  echo -e "${BLUE}[loop]${NC} Attach:   docker sandbox exec -it ${SANDBOX_NAME} opencode attach http://localhost:${SERVE_PORT}"
+  echo -e "${BLUE}[loop]${NC} Monitor:  tail -f ${loop_log}"
 }
 
 main

@@ -85,6 +85,12 @@ if [[ -z "$WORKDIR" ]]; then
   WORKDIR="$(pwd)"
 fi
 
+if [[ ! -d "$WORKDIR/.git" ]]; then
+  err "workdir must be the repository root (contains .git directory)"
+  err "Current workdir: $WORKDIR"
+  exit 1
+fi
+
 if [[ -z "$SANDBOX_NAME" ]]; then
   SANDBOX_NAME="$(basename "$WORKDIR")"
 fi
