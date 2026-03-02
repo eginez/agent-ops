@@ -1,0 +1,3 @@
+# {{PROJECT_NAME}} — Progress Log
+
+<!-- Append a new section at the top for each session. -->

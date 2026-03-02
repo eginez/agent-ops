@@ -1,0 +1,10 @@
+[
+  {
+    "id": "001",
+    "category": "foundation",
+    "description": "Initialize project skeleton, build system, and entry point",
+    "priority": 1,
+    "depends_on": [],
+    "passes": false
+  }
+]
