@@ -89,7 +89,7 @@ bash scripts/sandbox-bootstrap.sh my-project            # positional name
 
 ### `run_loop.py`
 
-Runs an agent autonomously in a loop inside a Docker Sandbox. Each iteration starts a fresh OpenCode session. The agent is expected to emit a promise sentinel in its output to signal the loop what to do next:
+Runs an agent autonomously in a loop, optionally inside a Docker Sandbox. Each iteration starts a fresh OpenCode session. The agent is expected to emit a promise sentinel in its output to signal the loop what to do next:
 
 | Sentinel | Effect |
 |---|---|
@@ -99,14 +99,32 @@ Runs an agent autonomously in a loop inside a Docker Sandbox. Each iteration sta
 | `<promise>DECIDE:question</promise>` | Stop — needs a design decision |
 
 ```bash
-python3 scripts/run_loop.py --sandbox my-project           # up to 10 iterations
+# Sandbox mode (default) — requires a bootstrapped sandbox
+python3 scripts/run_loop.py --sandbox my-project           # unlimited iterations
 python3 scripts/run_loop.py --sandbox my-project --once     # single iteration
-python3 scripts/run_loop.py --sandbox my-project -n 5       # 5 iterations
+python3 scripts/run_loop.py --sandbox my-project -n 5       # cap at 5 iterations
+
+# No-sandbox mode — runs opencode directly in the local working directory
+python3 scripts/run_loop.py --no-sandbox
+python3 scripts/run_loop.py --no-sandbox --workdir /path/to/project
+
+# Custom prompt
+python3 scripts/run_loop.py --no-sandbox --prompt "Fix all failing tests"
+python3 scripts/run_loop.py --no-sandbox --prompt @prompts/my-task.txt
 ```
 
-The sandbox name can also be set via the `RUDDER_SANDBOX` environment variable.
+**Options:**
 
-**Requirements:** Python 3, `docker sandbox` CLI, a bootstrapped sandbox.
+| Flag | Description |
+|---|---|
+| `-n N` | Cap the loop at N iterations (default: unlimited) |
+| `--once` | Run a single iteration |
+| `--no-sandbox` | Skip Docker Sandbox; run `opencode` locally |
+| `--workdir PATH` | Working directory when using `--no-sandbox` (default: current directory) |
+| `--sandbox NAME` | Sandbox name (also accepts positional arg or `RUDDER_SANDBOX` env var) |
+| `--prompt TEXT` | Override the built-in agent prompt; prefix with `@` to read from a file |
+
+**Requirements:** Python 3. Docker Sandbox and a bootstrapped sandbox are only required without `--no-sandbox`.
 
 ## Opt-out
 

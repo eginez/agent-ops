@@ -2,11 +2,12 @@
 """
 rudder-loop.py — Ralph Loop
 
-Runs OpenCode inside a Docker Sandbox, one fresh context per iteration.
+Runs OpenCode one fresh context per iteration, optionally inside a Docker Sandbox.
 Sandbox creation is handled by scripts/sandbox-bootstrap.sh.
 """
 
 import argparse
+import itertools
 import json
 import os
 import re
@@ -28,6 +29,7 @@ PROJECT_DIR = SCRIPT_DIR.parent
 
 def shlex_split(command: str) -> list:
     import shlex
+
     return shlex.split(command)
 
 
@@ -57,23 +59,37 @@ def get_workspace_path(sandbox_name: str) -> str:
     raise RuntimeError(f"Could not find workspace for sandbox: {sandbox_name}")
 
 
-def run_iteration(sandbox_name: str, iteration: int, max_iterations: int) -> bool:
+def run_iteration(
+    iteration: int,
+    max_iterations: int | None,
+    sandbox_name: str | None = None,
+    use_sandbox: bool = True,
+    workdir: str | None = None,
+    prompt: str | None = None,
+) -> bool:
     """Run one iteration of the loop. Returns True if we should continue."""
+    iter_display = str(max_iterations) if max_iterations is not None else "∞"
     print(f"{BLUE}[loop]{NC} ═══════════════════════════════════════════")
-    print(f"{BLUE}[loop]{NC} Iteration {iteration} of {max_iterations}")
+    print(f"{BLUE}[loop]{NC} Iteration {iteration} of {iter_display}")
     print(f"{BLUE}[loop]{NC} ═══════════════════════════════════════════")
 
-    workspace_path = get_workspace_path(sandbox_name)
-    prompt = generate_prompt()
+    prompt = prompt or generate_prompt()
 
-    cmd = (
-        ["docker", "sandbox", "exec", sandbox_name]
-        + shlex_split(f'opencode run --dir {workspace_path} "{prompt}"')
+    if use_sandbox:
+        assert sandbox_name is not None, "sandbox_name required when use_sandbox=True"
+        workspace_path = get_workspace_path(sandbox_name)
+        cmd = ["docker", "sandbox", "exec", sandbox_name] + shlex_split(
+            f'opencode run --dir {workspace_path} "{prompt}"'
+        )
+        print(f"{BLUE}[loop]{NC} Starting agent in {workspace_path}...")
+    else:
+        work_dir = workdir or os.getcwd()
+        cmd = shlex_split(f'opencode run --dir {work_dir} "{prompt}"')
+        print(f"{BLUE}[loop]{NC} Starting agent in {work_dir}...")
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
-
-    print(f"{BLUE}[loop]{NC} Starting agent in {workspace_path}...")
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert proc.stdout is not None
 
     buf = ""
@@ -115,10 +131,31 @@ def run_iteration(sandbox_name: str, iteration: int, max_iterations: int) -> boo
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run the Ralph Loop: iterate OpenCode sessions inside a Docker Sandbox."
+        description="Run the Ralph Loop: iterate OpenCode sessions, optionally inside a Docker Sandbox."
     )
-    parser.add_argument("-n", "--iterations", type=int, default=10)
+    parser.add_argument(
+        "-n",
+        "--iterations",
+        type=int,
+        default=None,
+        help="Maximum number of iterations (default: unlimited)",
+    )
     parser.add_argument("--once", action="store_true", help="Run a single iteration")
+    parser.add_argument(
+        "--prompt", type=str, default=None,
+        help="Prompt to pass to the agent each iteration (default: built-in session prompt)",
+    )
+    parser.add_argument(
+        "--no-sandbox",
+        action="store_true",
+        help="Run without Docker Sandbox (uses --workdir or current directory)",
+    )
+    parser.add_argument(
+        "--workdir",
+        type=str,
+        default=None,
+        help="Working directory when running without a sandbox (default: current directory)",
+    )
     parser.add_argument(
         "--sandbox",
         type=str,
@@ -128,37 +165,70 @@ def main():
 
     args = parser.parse_args()
 
+    if args.prompt and args.prompt.startswith("@"):
+        prompt_file = Path(args.prompt[1:])
+        if not prompt_file.is_file():
+            print(f"Error: prompt file not found: {prompt_file}", file=sys.stderr)
+            sys.exit(1)
+        args.prompt = prompt_file.read_text()
+
     if args.once:
         args.iterations = 1
 
-    sandbox_name = args.sandbox_name or args.sandbox
-    if not sandbox_name:
-        print("Error: sandbox name is required", file=sys.stderr)
-        parser.print_help()
-        sys.exit(1)
+    use_sandbox = not args.no_sandbox
+    sandbox_name: str | None = None
 
-    max_iterations = args.iterations
+    if use_sandbox:
+        sandbox_name = args.sandbox_name or args.sandbox
+        if not sandbox_name:
+            print(
+                "Error: sandbox name is required (or use --no-sandbox to run locally)",
+                file=sys.stderr,
+            )
+            parser.print_help()
+            sys.exit(1)
+
+    max_iterations: int | None = args.iterations
+    iter_display = str(max_iterations) if max_iterations is not None else "∞"
+    sandbox_display = sandbox_name if sandbox_name else "(none)"
 
     print(f"{BLUE}╔══════════════════════════════════════╗{NC}")
-    print(f"{BLUE}║      Rudder Loop — Ralph Style       ║{NC}")
-    print(f"{BLUE}║  Iterations: {max_iterations:<3}                      ║{NC}")
-    print(f"{BLUE}║  Sandbox: {sandbox_name:<25}║{NC}")
+    print(f"{BLUE}║      Agentic Loop .                  ║{NC}")
+    print(f"{BLUE}║  Iterations: {iter_display:<3}                      ║{NC}")
+    print(f"{BLUE}║  Sandbox: {sandbox_display:<25}║{NC}")
     print(f"{BLUE}╚══════════════════════════════════════╝{NC}")
     print()
 
-    for i in range(1, max_iterations + 1):
-        if not run_iteration(sandbox_name, i, max_iterations):
+    counter = (
+        range(1, max_iterations + 1)
+        if max_iterations is not None
+        else itertools.count(1)
+    )
+
+    for i in counter:
+        should_continue = run_iteration(
+            iteration=i,
+            max_iterations=max_iterations,
+            sandbox_name=sandbox_name,
+            use_sandbox=use_sandbox,
+            workdir=args.workdir,
+            prompt=args.prompt,
+        )
+        if not should_continue:
             print(f"{BLUE}[loop]{NC} Loop stopped at iteration {i}.")
             break
 
-        if i < max_iterations:
+        at_limit = max_iterations is not None and i >= max_iterations
+        if not at_limit:
             print(f"{BLUE}[loop]{NC} Pausing 5s...")
             time.sleep(5)
 
     print()
     print(f"{BLUE}[loop]{NC} Done.")
     print(f"{BLUE}[loop]{NC} Progress:   cat progress.txt")
-    print(f"{BLUE}[loop]{NC} Remaining:  cat documents/tasks/tasks.json | jq '.tasks[] | select(.passes==false)'")
+    print(
+        f"{BLUE}[loop]{NC} Remaining:  cat documents/tasks/tasks.json | jq '.tasks[] | select(.passes==false)'"
+    )
 
 
 if __name__ == "__main__":
