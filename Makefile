@@ -1,4 +1,4 @@
-BINARY    := agent-loop
+BINARY    := agent-loop-linux-amd64
 SRC       := ./src/cmd/agent-loop
 VERSION   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags "-X main.version=$(VERSION)"
@@ -9,7 +9,7 @@ all: build
 
 ## build: compile the agent-loop binary into the repo root
 build:
-	go build $(LDFLAGS) -o $(BINARY) $(SRC)
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY) $(SRC)
 
 ## install: install the binary to $GOPATH/bin (or ~/go/bin)
 install:
@@ -17,7 +17,7 @@ install:
 
 ## clean: remove the compiled binary
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) agent-loop
 
 ## test: run all tests
 test:
