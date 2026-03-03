@@ -88,7 +88,7 @@ func getWorkspacePath(sandboxName string) (string, error) {
 }
 
 // buildCmd constructs the opencode command for this iteration.
-func buildCmd(useSandbox bool, sandboxName, workdir, prompt string) (*exec.Cmd, error) {
+func buildCmd(useSandbox bool, sandboxName, workdir, prompt string, yolo bool) (*exec.Cmd, error) {
 	if useSandbox {
 		workspacePath, err := getWorkspacePath(sandboxName)
 		if err != nil {
@@ -109,13 +109,17 @@ func buildCmd(useSandbox bool, sandboxName, workdir, prompt string) (*exec.Cmd, 
 		}
 	}
 	slog.Info("running locally", "workdir", dir)
-	return exec.Command("opencode", "run", "--dir", dir, prompt), nil
+	cmd := exec.Command("opencode", "run", "--dir", dir, prompt)
+	if yolo {
+		cmd.Env = append(os.Environ(), `OPENCODE_PERMISSION={"*":"allow"}`)
+	}
+	return cmd, nil
 }
 
 // runIteration executes one agent session and streams its output to stdout.
 // It returns a loopResult indicating what the agent signalled, plus any error.
 // kill is closed by the caller to forcibly terminate the subprocess mid-run.
-func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, workdir, prompt string, kill <-chan struct{}) (loopResult, error) {
+func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, workdir, prompt string, yolo bool, kill <-chan struct{}) (loopResult, error) {
 	iterDisplay := "∞"
 	if maxIterations > 0 {
 		iterDisplay = fmt.Sprintf("%d", maxIterations)
@@ -127,7 +131,7 @@ func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, wo
 
 	slog.Info("starting iteration", "iteration", iteration, "max_iterations", iterDisplay)
 
-	cmd, err := buildCmd(useSandbox, sandboxName, workdir, prompt)
+	cmd, err := buildCmd(useSandbox, sandboxName, workdir, prompt, yolo)
 	if err != nil {
 		return resultError, fmt.Errorf("build command: %w", err)
 	}
@@ -256,6 +260,7 @@ func main() {
 		maxIterations int
 		once          bool
 		noSandbox     bool
+		yolo          bool
 		workdir       string
 		sandboxFlag   string
 		promptFlag    string
@@ -266,6 +271,7 @@ func main() {
 	flag.IntVar(&maxIterations, "n", 0, "Maximum number of iterations (0 = unlimited)")
 	flag.BoolVar(&once, "once", false, "Run a single iteration")
 	flag.BoolVar(&noSandbox, "no-sandbox", false, "Run without Docker Sandbox (uses --workdir or cwd)")
+	flag.BoolVar(&yolo, "yolo", false, "Grant all opencode permissions without prompting (only valid with --no-sandbox; silently ignored otherwise)")
 	flag.StringVar(&workdir, "workdir", "", "Working directory when running without a sandbox (default: cwd)")
 	flag.StringVar(&sandboxFlag, "sandbox", os.Getenv("RUDDER_SANDBOX"), "Sandbox name (or set RUDDER_SANDBOX env var)")
 	flag.StringVar(&promptFlag, "prompt", "", "Prompt for the agent (prefix with @ to read from a file)")
@@ -361,7 +367,7 @@ func main() {
 
 	// --- main loop ---
 	for i := 1; maxIterations == 0 || i <= maxIterations; i++ {
-		res, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, killProc)
+		res, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, yolo, killProc)
 		if err != nil {
 			slog.Error("iteration error", "iteration", i, "err", err)
 			fmt.Printf("%s[loop]%s Error: %v\n", colorRed, colorReset, err)
