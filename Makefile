@@ -1,6 +1,6 @@
 BINARY    := agent-loop
 SRC       := ./src/cmd/agent-loop
-VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags "-X main.version=$(VERSION)"
 
 .PHONY: all build clean install test vet fmt
