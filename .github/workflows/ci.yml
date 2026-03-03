@@ -19,7 +19,8 @@ jobs:
           go-version: '1.24'
 
       - name: Build
-        run: make build
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o agent-loop-linux-amd64 ./src/cmd/agent-loop
 
       - name: Test
         run: make test
