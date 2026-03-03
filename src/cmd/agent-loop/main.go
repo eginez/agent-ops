@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -59,6 +60,34 @@ func generatePrompt() string {
 	return "You are autonomous agent, your task is to complete a development task. " +
 		"Start by reading the AGENTS.md and then look for " +
 		"documents/guides/SESSION_PROTOCOL.md — understand session workflow. Begin work now"
+}
+
+// parseDuration parses a duration string like 15min, 1h, 2d.
+// Supports s/sec, m/min, h/hour, d/day (case-insensitive).
+func parseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	// find where digits end
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9') {
+		i++
+	}
+	if i == 0 {
+		return 0, fmt.Errorf("no numeric value in %q", s)
+	}
+	n, _ := strconv.Atoi(s[:i])
+	unit := strings.ToLower(strings.TrimSpace(s[i:]))
+	switch unit {
+	case "s", "sec", "second", "seconds":
+		return time.Duration(n) * time.Second, nil
+	case "m", "min", "minute", "minutes":
+		return time.Duration(n) * time.Minute, nil
+	case "h", "hour", "hours":
+		return time.Duration(n) * time.Hour, nil
+	case "d", "day", "days":
+		return time.Duration(n) * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q (use s/sec, m/min, h/hour, d/day)", unit)
+	}
 }
 
 // getWorkspacePath queries `docker sandbox ls --json` and returns the first
@@ -261,6 +290,7 @@ func main() {
 		once          bool
 		noSandbox     bool
 		yolo          bool
+		everyFlag     string
 		workdir       string
 		sandboxFlag   string
 		promptFlag    string
@@ -272,6 +302,7 @@ func main() {
 	flag.BoolVar(&once, "once", false, "Run a single iteration")
 	flag.BoolVar(&noSandbox, "no-sandbox", false, "Run without Docker Sandbox (uses --workdir or cwd)")
 	flag.BoolVar(&yolo, "yolo", false, "Grant all opencode permissions without prompting (only valid with --no-sandbox; silently ignored otherwise)")
+	flag.StringVar(&everyFlag, "every", "", "Run on a fixed schedule (e.g. 15min, 1h, 2d); ignores agent sentinels")
 	flag.StringVar(&workdir, "workdir", "", "Working directory when running without a sandbox (default: cwd)")
 	flag.StringVar(&sandboxFlag, "sandbox", os.Getenv("RUDDER_SANDBOX"), "Sandbox name (or set RUDDER_SANDBOX env var)")
 	flag.StringVar(&promptFlag, "prompt", "", "Prompt for the agent (prefix with @ to read from a file)")
@@ -319,6 +350,18 @@ func main() {
 		prompt = generatePrompt()
 	}
 
+	// Parse --every schedule.
+	var everyInterval time.Duration
+	if everyFlag != "" {
+		d, err := parseDuration(everyFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --every value: %v\n", err)
+			flag.Usage()
+			os.Exit(1)
+		}
+		everyInterval = d
+	}
+
 	// Validate sandbox requirement.
 	useSandbox := !noSandbox
 	sandboxName := sandboxFlag
@@ -338,15 +381,22 @@ func main() {
 		sandboxDisplay = "(none)"
 	}
 
+	everyDisplay := "off"
+	if everyInterval > 0 {
+		everyDisplay = everyFlag
+	}
+
 	fmt.Printf("%s╔══════════════════════════════════════╗%s\n", colorBlue, colorReset)
 	fmt.Printf("%s║      Agentic Loop                    ║%s\n", colorBlue, colorReset)
 	fmt.Printf("%s║  Iterations: %-3s                     ║%s\n", colorBlue, iterDisplay, colorReset)
 	fmt.Printf("%s║  Sandbox: %-25s║%s\n", colorBlue, sandboxDisplay, colorReset)
+	fmt.Printf("%s║  Every: %-26s║%s\n", colorBlue, everyDisplay, colorReset)
 	fmt.Printf("%s╚══════════════════════════════════════╝%s\n\n", colorBlue, colorReset)
 
 	slog.Info("agent-loop starting",
 		"max_iterations", iterDisplay,
 		"sandbox", sandboxDisplay,
+		"every", everyDisplay,
 		"use_sandbox", useSandbox,
 	)
 
@@ -366,33 +416,54 @@ func main() {
 	}()
 
 	// --- main loop ---
-	for i := 1; maxIterations == 0 || i <= maxIterations; i++ {
-		res, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, yolo, killProc)
-		if err != nil {
-			slog.Error("iteration error", "iteration", i, "err", err)
-			fmt.Printf("%s[loop]%s Error: %v\n", colorRed, colorReset, err)
-			fmt.Printf("%s[loop]%s Loop stopped at iteration %d.\n", colorBlue, colorReset, i)
-			break
+	if everyInterval > 0 {
+		// Scheduled mode: run once, wait everyInterval, run again — forever
+		for i := 1; maxIterations == 0 || i <= maxIterations; i++ {
+			_, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, yolo, killProc)
+			if err != nil {
+				slog.Error("iteration error", "iteration", i, "err", err)
+				fmt.Printf("%s[loop]%s Error: %v — continuing\n", colorRed, colorReset, err)
+			}
+			atLimit := maxIterations > 0 && i >= maxIterations
+			if !atLimit {
+				fmt.Printf("%s[loop]%s Next run in %s...\n", colorBlue, colorReset, everyFlag)
+				select {
+				case <-time.After(everyInterval):
+				case <-killProc:
+					goto exit
+				}
+			}
 		}
+	} else {
+		// Sentinel-driven mode: continue/stop based on agent promise
+		for i := 1; maxIterations == 0 || i <= maxIterations; i++ {
+			res, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, yolo, killProc)
+			if err != nil {
+				slog.Error("iteration error", "iteration", i, "err", err)
+				fmt.Printf("%s[loop]%s Error: %v\n", colorRed, colorReset, err)
+				fmt.Printf("%s[loop]%s Loop stopped at iteration %d.\n", colorBlue, colorReset, i)
+				break
+			}
 
-		if res == resultInterrupted {
-			fmt.Printf("%s[loop]%s Loop interrupted at iteration %d.\n", colorYellow, colorReset, i)
-			break
-		}
+			if res == resultInterrupted {
+				fmt.Printf("%s[loop]%s Loop interrupted at iteration %d.\n", colorYellow, colorReset, i)
+				break
+			}
 
-		if res != resultProgress {
-			fmt.Printf("%s[loop]%s Loop stopped at iteration %d.\n", colorBlue, colorReset, i)
-			break
-		}
+			if res != resultProgress {
+				fmt.Printf("%s[loop]%s Loop stopped at iteration %d.\n", colorBlue, colorReset, i)
+				break
+			}
 
-		atLimit := maxIterations > 0 && i >= maxIterations
-		if !atLimit {
-			slog.Info("pausing between iterations", "seconds", 5)
-			fmt.Printf("%s[loop]%s Pausing 5s...\n", colorBlue, colorReset)
-			select {
-			case <-time.After(5 * time.Second):
-			case <-killProc:
-				goto exit
+			atLimit := maxIterations > 0 && i >= maxIterations
+			if !atLimit {
+				slog.Info("pausing between iterations", "seconds", 5)
+				fmt.Printf("%s[loop]%s Pausing 5s...\n", colorBlue, colorReset)
+				select {
+				case <-time.After(5 * time.Second):
+				case <-killProc:
+					goto exit
+				}
 			}
 		}
 	}
