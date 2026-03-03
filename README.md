@@ -10,8 +10,7 @@ Download the latest pre-built binary from GitHub Releases. Each commit to `main`
 
 ```bash
 # Download the latest release
-SHA=$(curl -s https://api.github.com/repos/eginez/agent-ops/releases/latest | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
-curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/$SHA/agent-loop-linux-amd64
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/lastest/download/agent-loop-linux-amd64
 chmod +x agent-loop
 ```
 
