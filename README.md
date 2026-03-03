@@ -2,19 +2,46 @@
 
 A starter kit for software projects built with coding agents. Provides a documentation template that gives agents the structure they need to work autonomously across sessions, plus scripts to run agents in sandboxed environments.
 
+## Installation
+
+### Pre-built Binaries
+
+Download the latest pre-built binary from GitHub Releases. Each commit to `main` is automatically built and released with a tag matching the commit hash (e.g., `vabc1234`).
+
+```bash
+# Download the latest release
+SHA=$(curl -s https://api.github.com/repos/eginez/agent-ops/releases/latest | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/$SHA/agent-loop
+chmod +x agent-loop
+```
+
+Or download a specific version directly:
+
+```bash
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/vabc1234/agent-loop
+chmod +x agent-loop
+```
+
+Verify the downloaded binary:
+
+```bash
+./agent-loop --version
+```
+
 ## Quick Start
 
 ```bash
-# 1. Scaffold docs into your project
+# 1. Download the latest pre-built binary
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/latest/download/agent-loop
+chmod +x agent-loop
+
+# 2. Scaffold docs into your project
 bash scripts/scaffold-docs.sh /path/to/your-project
 
-# 2. Fill in the {{PLACEHOLDER}} values in AGENTS.md and the documents/ tree
+# 3. Fill in the {{PLACEHOLDER}} values in AGENTS.md and the documents/ tree
 
-# 3. Bootstrap a sandbox for the project
+# 4. Bootstrap a sandbox for the project
 bash scripts/sandbox-bootstrap.sh --name my-project --workdir /path/to/your-project
-
-# 4. Build the agent loop binary
-go build -o agent-loop ./src/cmd/agent-loop
 
 # 5. Run the agent loop
 ./agent-loop -sandbox my-project
@@ -160,3 +187,21 @@ python3 scripts/run_loop.py --sandbox my-project
 ## Opt-out
 
 If a project contains a `.agentops.off` file at the repo root, global ops are not applied.
+
+## Development
+
+### Building from Source
+
+```bash
+go build -o agent-loop ./src/cmd/agent-loop
+```
+
+### Running Tests
+
+```bash
+make test
+```
+
+### Versioning
+
+The binary version is derived from the Git commit hash. When built from source, `./agent-loop --version` outputs the short commit hash of the build. GitHub Releases are automatically created for each commit pushed to `main`, tagged with `v<short-hash>`.
