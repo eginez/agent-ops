@@ -141,6 +141,10 @@ go build -o agent-loop ./src/cmd/agent-loop
 | `-sandbox NAME` | Sandbox name (also accepts positional arg or `RUDDER_SANDBOX` env var) |
 | `-prompt TEXT` | Override the built-in agent prompt; prefix with `@` to read from a file |
 
+**Stopping the loop:**
+
+Press `Ctrl-C` at any time. `agent-loop` will kill the running opencode process (inside the sandbox via `pkill -9 -f opencode`, or locally) and exit cleanly.
+
 **Requirements:** Go 1.21+. Docker Sandbox and a bootstrapped sandbox are only required without `-no-sandbox`.
 
 ### `run_loop.py` (legacy)
