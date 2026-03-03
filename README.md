@@ -11,14 +11,14 @@ Download the latest pre-built binary from GitHub Releases. Each commit to `main`
 ```bash
 # Download the latest release
 SHA=$(curl -s https://api.github.com/repos/eginez/agent-ops/releases/latest | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
-curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/$SHA/agent-loop
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/$SHA/agent-loop-linux-amd64
 chmod +x agent-loop
 ```
 
 Or download a specific version directly:
 
 ```bash
-curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/vabc1234/agent-loop
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/download/vabc1234/agent-loop-linux-amd64
 chmod +x agent-loop
 ```
 
@@ -32,7 +32,7 @@ Verify the downloaded binary:
 
 ```bash
 # 1. Download the latest pre-built binary
-curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/latest/download/agent-loop
+curl -L -o agent-loop https://github.com/eginez/agent-ops/releases/latest/download/agent-loop-linux-amd64
 chmod +x agent-loop
 
 # 2. Scaffold docs into your project
@@ -136,7 +136,7 @@ Runs an agent autonomously in a loop, optionally inside a Docker Sandbox. Each i
 **Build:**
 
 ```bash
-go build -o agent-loop ./src/cmd/agent-loop
+GOOS=linux GOARCH=amd64 go build -o agent-loop-linux-amd64 ./src/cmd/agent-loop
 ```
 
 **Run:**
@@ -193,7 +193,7 @@ If a project contains a `.agentops.off` file at the repo root, global ops are no
 ### Building from Source
 
 ```bash
-go build -o agent-loop ./src/cmd/agent-loop
+GOOS=linux GOARCH=amd64 go build -o agent-loop-linux-amd64 ./src/cmd/agent-loop
 ```
 
 ### Running Tests
