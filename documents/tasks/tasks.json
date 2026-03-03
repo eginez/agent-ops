@@ -5,6 +5,6 @@
     "description": "Initialize agent-ops project documentation structure with AGENTS.md and session protocol",
     "priority": 1,
     "depends_on": [],
-    "passes": false
+    "passes": true
   }
 ]
