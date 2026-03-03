@@ -1,0 +1,10 @@
+[
+  {
+    "id": "001",
+    "category": "foundation",
+    "description": "Initialize agent-ops project documentation structure with AGENTS.md and session protocol",
+    "priority": 1,
+    "depends_on": [],
+    "passes": false
+  }
+]
