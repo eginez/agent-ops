@@ -13,14 +13,22 @@ bash scripts/scaffold-docs.sh /path/to/your-project
 # 3. Bootstrap a sandbox for the project
 bash scripts/sandbox-bootstrap.sh --name my-project --workdir /path/to/your-project
 
-# 4. Run the agent loop
-python3 scripts/run_loop.py --sandbox my-project
+# 4. Build the agent loop binary
+go build -o agent-loop ./src/cmd/agent-loop
+
+# 5. Run the agent loop
+./agent-loop -sandbox my-project
 ```
 
 ## Structure
 
 ```
 agent-ops/
+├── go.mod
+├── src/
+│   └── cmd/
+│       └── agent-loop/
+│           └── main.go              # Agent loop (Go)
 ├── templates/       # Project documentation templates
 │   └── project-docs/
 │       ├── AGENTS.md                              # Agent entry point
@@ -36,7 +44,7 @@ agent-ops/
 └── scripts/         # Tooling for sandboxes and agent loops
     ├── scaffold-docs.sh
     ├── sandbox-bootstrap.sh
-    └── run_loop.py
+    └── run_loop.py                  # Agent loop (Python, legacy)
 ```
 
 ## Templates
@@ -87,7 +95,7 @@ bash scripts/sandbox-bootstrap.sh my-project            # positional name
 
 **Requirements:** `docker` CLI with `docker sandbox` support, `jq`.
 
-### `run_loop.py`
+### `agent-loop` (Go)
 
 Runs an agent autonomously in a loop, optionally inside a Docker Sandbox. Each iteration starts a fresh OpenCode session. The agent is expected to emit a promise sentinel in its output to signal the loop what to do next:
 
@@ -98,19 +106,28 @@ Runs an agent autonomously in a loop, optionally inside a Docker Sandbox. Each i
 | `<promise>BLOCKED:reason</promise>` | Stop — needs human input |
 | `<promise>DECIDE:question</promise>` | Stop — needs a design decision |
 
+**Build:**
+
+```bash
+go build -o agent-loop ./src/cmd/agent-loop
+```
+
+**Run:**
+
 ```bash
 # Sandbox mode (default) — requires a bootstrapped sandbox
-python3 scripts/run_loop.py --sandbox my-project           # unlimited iterations
-python3 scripts/run_loop.py --sandbox my-project --once     # single iteration
-python3 scripts/run_loop.py --sandbox my-project -n 5       # cap at 5 iterations
+./agent-loop -sandbox my-project              # unlimited iterations
+./agent-loop -sandbox my-project -once        # single iteration
+./agent-loop -sandbox my-project -n 5         # cap at 5 iterations
+./agent-loop my-project                       # positional sandbox name
 
 # No-sandbox mode — runs opencode directly in the local working directory
-python3 scripts/run_loop.py --no-sandbox
-python3 scripts/run_loop.py --no-sandbox --workdir /path/to/project
+./agent-loop -no-sandbox
+./agent-loop -no-sandbox -workdir /path/to/project
 
 # Custom prompt
-python3 scripts/run_loop.py --no-sandbox --prompt "Fix all failing tests"
-python3 scripts/run_loop.py --no-sandbox --prompt @prompts/my-task.txt
+./agent-loop -no-sandbox -prompt "Fix all failing tests"
+./agent-loop -no-sandbox -prompt @prompts/my-task.txt
 ```
 
 **Options:**
@@ -118,13 +135,23 @@ python3 scripts/run_loop.py --no-sandbox --prompt @prompts/my-task.txt
 | Flag | Description |
 |---|---|
 | `-n N` | Cap the loop at N iterations (default: unlimited) |
-| `--once` | Run a single iteration |
-| `--no-sandbox` | Skip Docker Sandbox; run `opencode` locally |
-| `--workdir PATH` | Working directory when using `--no-sandbox` (default: current directory) |
-| `--sandbox NAME` | Sandbox name (also accepts positional arg or `RUDDER_SANDBOX` env var) |
-| `--prompt TEXT` | Override the built-in agent prompt; prefix with `@` to read from a file |
+| `-once` | Run a single iteration |
+| `-no-sandbox` | Skip Docker Sandbox; run `opencode` locally |
+| `-workdir PATH` | Working directory when using `-no-sandbox` (default: cwd) |
+| `-sandbox NAME` | Sandbox name (also accepts positional arg or `RUDDER_SANDBOX` env var) |
+| `-prompt TEXT` | Override the built-in agent prompt; prefix with `@` to read from a file |
 
-**Requirements:** Python 3. Docker Sandbox and a bootstrapped sandbox are only required without `--no-sandbox`.
+**Requirements:** Go 1.21+. Docker Sandbox and a bootstrapped sandbox are only required without `-no-sandbox`.
+
+### `run_loop.py` (legacy)
+
+The original Python implementation of the agent loop. Kept for reference. See `agent-loop` above for the current version.
+
+```bash
+python3 scripts/run_loop.py --sandbox my-project
+```
+
+**Requirements:** Python 3.
 
 ## Opt-out
 

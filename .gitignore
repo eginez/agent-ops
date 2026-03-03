@@ -1,3 +1,9 @@
+# Go
+agent-loop
+*.exe
+*.test
+*.out
+
 # Python
 __pycache__/
 *.py[cod]
