@@ -23,11 +23,12 @@ jobs:
           go-version: '1.24'
 
       - name: Build binary
-        run: make build
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o agent-loop-linux-amd64 ./src/cmd/agent-loop
 
       - name: CreateRelease
         uses: softprops/action-gh-release@v2
         with:
-          files: agent-loop
+          files: agent-loop-linux-amd64
           prerelease: true
           generate_release_notes: true
