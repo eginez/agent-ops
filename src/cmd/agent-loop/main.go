@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -25,6 +26,114 @@ import (
 	"syscall"
 	"time"
 )
+
+// --- JSONL event types emitted by `opencode run --format json` ---
+
+type ocEvent struct {
+	Type      string  `json:"type"`
+	SessionID string  `json:"sessionID"`
+	Part      *ocPart `json:"part,omitempty"`
+}
+
+type ocPart struct {
+	Tool  string  `json:"tool"`
+	Type  string  `json:"type"`
+	State ocState `json:"state"`
+}
+
+type ocState struct {
+	Status string          `json:"status"`
+	Input  json.RawMessage `json:"input"`
+}
+
+func truncate(s string, n int) string {
+	// Truncate at a rune boundary.
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
+}
+
+// displayEvent prints a single terse [loop] line for tool_use events.
+// All other event types are silently ignored.
+func displayEvent(ev ocEvent) {
+	if ev.Type != "tool_use" || ev.Part == nil {
+		return
+	}
+	p := ev.Part
+	icon, detail := toolSummary(p)
+	if icon == "" {
+		return
+	}
+	fmt.Printf("%s[loop]%s %s  %s\n", colorBlue, colorReset, icon, detail)
+}
+
+func toolSummary(p *ocPart) (icon, detail string) {
+	switch p.Tool {
+	case "bash":
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			return "$", truncate(strings.TrimSpace(in.Command), 72)
+		}
+	case "read":
+		var in struct {
+			FilePath string `json:"filePath"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			return "→", in.FilePath
+		}
+	case "write", "edit":
+		var in struct {
+			FilePath string `json:"filePath"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			return "←", in.FilePath
+		}
+	case "glob", "grep":
+		var in struct {
+			Pattern string `json:"pattern"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			return "✱", in.Pattern
+		}
+	case "task":
+		var in struct {
+			SubagentType string `json:"subagent_type"`
+			Description  string `json:"description"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			agent := in.SubagentType
+			if agent == "" {
+				agent = "agent"
+			}
+			desc := in.Description
+			if desc == "" {
+				desc = agent + " task"
+			}
+			return "⟳", fmt.Sprintf("[%s] %s", agent, truncate(desc, 60))
+		}
+	case "webfetch":
+		var in struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			return "%", truncate(in.URL, 72)
+		}
+	case "skill":
+		var in struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(p.State.Input, &in) == nil {
+			return "→", "skill: " + in.Name
+		}
+	default:
+		return "⚙", p.Tool
+	}
+	return "", ""
+}
 
 // ANSI color codes used in banner/progress output.
 const (
@@ -116,17 +225,54 @@ func getWorkspacePath(sandboxName string) (string, error) {
 	return "", fmt.Errorf("no workspace found for sandbox %q", sandboxName)
 }
 
+// startServe launches `opencode serve --port <port>` and waits until it prints its
+// listening URL, then drains the rest of its stdout silently.
+// The caller is responsible for killing the returned cmd when done.
+func startServe(port int, workdir string, yolo bool) (string, *exec.Cmd, error) {
+	cmd := exec.Command("opencode", "serve", "--port", strconv.Itoa(port))
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+	if yolo {
+		cmd.Env = append(os.Environ(), `OPENCODE_PERMISSION={"*":"allow"}`)
+	}
+	cmd.Stderr = os.Stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", nil, fmt.Errorf("serve stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return "", nil, fmt.Errorf("start opencode serve: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "listening on") {
+			parts := strings.Fields(line)
+			url := parts[len(parts)-1]
+			go io.Copy(io.Discard, stdout) // drain so the process doesn't block
+			return url, cmd, nil
+		}
+	}
+	_ = cmd.Process.Kill()
+	return "", nil, fmt.Errorf("opencode serve exited before printing a URL")
+}
+
 // buildCmd constructs the opencode command for this iteration.
-func buildCmd(useSandbox bool, sandboxName, workdir, prompt string, yolo bool) (*exec.Cmd, error) {
+// serverURL is only used in local (no-sandbox) mode; it is the URL of the persistent
+// opencode serve process that was started before the loop.
+func buildCmd(useSandbox bool, sandboxName, workdir, prompt, serverURL string, yolo bool) (*exec.Cmd, error) {
 	if useSandbox {
 		workspacePath, err := getWorkspacePath(sandboxName)
 		if err != nil {
 			return nil, err
 		}
 		slog.Info("resolved sandbox workspace", "sandbox", sandboxName, "workspace", workspacePath)
-		// docker sandbox exec <name> opencode run --dir <path> "<prompt>"
+		// docker sandbox exec <name> opencode run --format json --dir <path> "<prompt>"
 		return exec.Command("docker", "sandbox", "exec", sandboxName,
-			"opencode", "run", "--dir", workspacePath, prompt), nil
+			"opencode", "run", "--format", "json", "--dir", workspacePath, prompt), nil
 	}
 
 	dir := workdir
@@ -137,18 +283,18 @@ func buildCmd(useSandbox bool, sandboxName, workdir, prompt string, yolo bool) (
 			return nil, fmt.Errorf("getwd: %w", err)
 		}
 	}
-	slog.Info("running locally", "workdir", dir)
-	cmd := exec.Command("opencode", "run", "--dir", dir, prompt)
-	if yolo {
-		cmd.Env = append(os.Environ(), `OPENCODE_PERMISSION={"*":"allow"}`)
-	}
-	return cmd, nil
+	slog.Info("running locally", "workdir", dir, "server", serverURL)
+	// Permissions are handled by the serve process; yolo env is set there.
+	return exec.Command("opencode", "run",
+		"--attach", serverURL,
+		"--format", "json",
+		"--dir", dir, prompt), nil
 }
 
 // runIteration executes one agent session and streams its output to stdout.
 // It returns a loopResult indicating what the agent signalled, plus any error.
 // kill is closed by the caller to forcibly terminate the subprocess mid-run.
-func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, workdir, prompt string, yolo bool, kill <-chan struct{}) (loopResult, error) {
+func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, workdir, prompt, serverURL string, yolo bool, kill <-chan struct{}) (loopResult, error) {
 	iterDisplay := "∞"
 	if maxIterations > 0 {
 		iterDisplay = fmt.Sprintf("%d", maxIterations)
@@ -160,7 +306,7 @@ func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, wo
 
 	slog.Info("starting iteration", "iteration", iteration, "max_iterations", iterDisplay)
 
-	cmd, err := buildCmd(useSandbox, sandboxName, workdir, prompt, yolo)
+	cmd, err := buildCmd(useSandbox, sandboxName, workdir, prompt, serverURL, yolo)
 	if err != nil {
 		return resultError, fmt.Errorf("build command: %w", err)
 	}
@@ -202,48 +348,57 @@ func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, wo
 		}
 	}()
 
-	var buf strings.Builder
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // opencode JSON lines can be large
 	result := resultError // default if no sentinel found
 
+	var sessionPrinted bool
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Println(line)
-		buf.WriteString(line)
-		buf.WriteByte('\n')
 
-		accumulated := buf.String()
+		var ev ocEvent
+		if json.Unmarshal([]byte(line), &ev) == nil {
+			if !sessionPrinted && ev.SessionID != "" {
+				fmt.Printf("%s[loop]%s session %s\n", colorBlue, colorReset, ev.SessionID)
+				if serverURL != "" {
+					fmt.Printf("%s[loop]%s observe: opencode attach %s -s %s\n",
+						colorBlue, colorReset, serverURL, ev.SessionID)
+				}
+				sessionPrinted = true
+			}
+			displayEvent(ev)
+		}
 
 		switch {
-		case strings.Contains(accumulated, "<promise>COMPLETE</promise>"):
+		case strings.Contains(line, "<promise>COMPLETE</promise>"):
 			slog.Info("sentinel received", "sentinel", "COMPLETE")
 			fmt.Printf("\n%s[loop]%s ALL TASKS COMPLETE\n", colorGreen, colorReset)
 			result = resultComplete
 			goto done
 
-		case strings.Contains(accumulated, "<promise>BLOCKED:"):
-			match := reBlocked.FindStringSubmatch(accumulated)
-			reason := "unknown"
-			if len(match) > 1 {
-				reason = match[1]
+		case strings.Contains(line, "<promise>BLOCKED:"):
+			reason := reBlocked.FindStringSubmatch(line)
+			r := "unknown"
+			if len(reason) > 1 {
+				r = reason[1]
 			}
-			slog.Warn("sentinel received", "sentinel", "BLOCKED", "reason", reason)
-			fmt.Printf("\n%s[loop]%s BLOCKED: %s\n", colorRed, colorReset, reason)
+			slog.Warn("sentinel received", "sentinel", "BLOCKED", "reason", r)
+			fmt.Printf("\n%s[loop]%s BLOCKED: %s\n", colorRed, colorReset, r)
 			result = resultBlocked
 			goto done
 
-		case strings.Contains(accumulated, "<promise>DECIDE:"):
-			match := reDecide.FindStringSubmatch(accumulated)
-			question := "unknown"
-			if len(match) > 1 {
-				question = match[1]
+		case strings.Contains(line, "<promise>DECIDE:"):
+			question := reDecide.FindStringSubmatch(line)
+			q := "unknown"
+			if len(question) > 1 {
+				q = question[1]
 			}
-			slog.Warn("sentinel received", "sentinel", "DECIDE", "question", question)
-			fmt.Printf("\n%s[loop]%s DECISION NEEDED: %s\n", colorYellow, colorReset, question)
+			slog.Warn("sentinel received", "sentinel", "DECIDE", "question", q)
+			fmt.Printf("\n%s[loop]%s DECISION NEEDED: %s\n", colorYellow, colorReset, q)
 			result = resultDecide
 			goto done
 
-		case strings.Contains(accumulated, "<promise>PROGRESS</promise>"):
+		case strings.Contains(line, "<promise>PROGRESS</promise>"):
 			slog.Info("sentinel received", "sentinel", "PROGRESS")
 			fmt.Printf("\n%s[loop]%s Task completed, continuing...\n", colorGreen, colorReset)
 			result = resultProgress
@@ -295,6 +450,7 @@ func main() {
 		sandboxFlag   string
 		promptFlag    string
 		printVersion  bool
+		port          int
 	)
 
 	flag.BoolVar(&printVersion, "version", false, "Print version and exit")
@@ -306,6 +462,7 @@ func main() {
 	flag.StringVar(&workdir, "workdir", "", "Working directory when running without a sandbox (default: cwd)")
 	flag.StringVar(&sandboxFlag, "sandbox", os.Getenv("RUDDER_SANDBOX"), "Sandbox name (or set RUDDER_SANDBOX env var)")
 	flag.StringVar(&promptFlag, "prompt", "", "Prompt for the agent (prefix with @ to read from a file)")
+	flag.IntVar(&port, "port", 4096, "Port for the local opencode server (no-sandbox mode); enables live TUI observation")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: agent-loop [options] [sandbox-name]\n\n")
@@ -400,6 +557,25 @@ func main() {
 		"use_sandbox", useSandbox,
 	)
 
+	// --- start opencode serve (local mode only) ---
+	var serverURL string
+	if !useSandbox {
+		dir := workdir
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		fmt.Printf("%s[loop]%s Starting opencode server on port %d...\n", colorBlue, colorReset, port)
+		url, serveCmd, err := startServe(port, dir, yolo)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to start opencode serve: %v\n", err)
+			os.Exit(1)
+		}
+		serverURL = url
+		defer serveCmd.Process.Kill()
+		fmt.Printf("%s[loop]%s observe: opencode attach %s\n\n", colorBlue, colorReset, serverURL)
+		slog.Info("opencode server ready", "url", serverURL)
+	}
+
 	// --- signal handling ---
 	// Ctrl-C closes killProc, which kills the running subprocess immediately.
 	sigs := make(chan os.Signal, 1)
@@ -419,7 +595,7 @@ func main() {
 	if everyInterval > 0 {
 		// Scheduled mode: run once, wait everyInterval, run again — forever
 		for i := 1; maxIterations == 0 || i <= maxIterations; i++ {
-			_, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, yolo, killProc)
+			_, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, serverURL, yolo, killProc)
 			if err != nil {
 				slog.Error("iteration error", "iteration", i, "err", err)
 				fmt.Printf("%s[loop]%s Error: %v — continuing\n", colorRed, colorReset, err)
@@ -437,7 +613,7 @@ func main() {
 	} else {
 		// Sentinel-driven mode: continue/stop based on agent promise
 		for i := 1; maxIterations == 0 || i <= maxIterations; i++ {
-			res, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, yolo, killProc)
+			res, err := runIteration(i, maxIterations, useSandbox, sandboxName, workdir, prompt, serverURL, yolo, killProc)
 			if err != nil {
 				slog.Error("iteration error", "iteration", i, "err", err)
 				fmt.Printf("%s[loop]%s Error: %v\n", colorRed, colorReset, err)
