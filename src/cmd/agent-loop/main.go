@@ -357,6 +357,7 @@ func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, wo
 		line := scanner.Text()
 
 		var ev ocEvent
+		isText := false
 		if json.Unmarshal([]byte(line), &ev) == nil {
 			if !sessionPrinted && ev.SessionID != "" {
 				fmt.Printf("%s[loop]%s session %s\n", colorBlue, colorReset, ev.SessionID)
@@ -367,6 +368,13 @@ func runIteration(iteration, maxIterations int, useSandbox bool, sandboxName, wo
 				sessionPrinted = true
 			}
 			displayEvent(ev)
+			isText = ev.Type == "text"
+		}
+
+		// Only scan for sentinels in the agent's own text output, not in tool
+		// outputs which may contain sentinel examples from documentation files.
+		if !isText {
+			continue
 		}
 
 		switch {
