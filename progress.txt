@@ -1,3 +1,20 @@
+## Session: 2026-05-03
+
+### Completed
+- Added `--expose` flag to `agent-loop` server execution, allowing developers to expose the headless opencode serve process to the local network (binds to 0.0.0.0).
+- Created design spec `docs/superpowers/specs/2026-05-03-expose-server-design.md`
+- Created implementation plan `docs/superpowers/plans/2026-05-03-expose-server.md`
+
+### Current State
+- Code builds successfully.
+- Changes pushed to `main`.
+
+### Next Steps
+- Implement any other features the user requires.
+
+### Issues / Blockers
+- None
+
 ## Session: 2026-03-03
 
 ### Completed
