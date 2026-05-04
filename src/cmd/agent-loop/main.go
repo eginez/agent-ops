@@ -459,6 +459,7 @@ func main() {
 		promptFlag    string
 		printVersion  bool
 		port          int
+		expose        bool
 	)
 
 	flag.BoolVar(&printVersion, "version", false, "Print version and exit")
@@ -471,6 +472,7 @@ func main() {
 	flag.StringVar(&sandboxFlag, "sandbox", os.Getenv("RUDDER_SANDBOX"), "Sandbox name (or set RUDDER_SANDBOX env var)")
 	flag.StringVar(&promptFlag, "prompt", "", "Prompt for the agent (prefix with @ to read from a file)")
 	flag.IntVar(&port, "port", 4096, "Port for the local opencode server (no-sandbox mode); enables live TUI observation")
+	flag.BoolVar(&expose, "expose", false, "Expose the local opencode server to the network (binds to 0.0.0.0)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: agent-loop [options] [sandbox-name]\n\n")
