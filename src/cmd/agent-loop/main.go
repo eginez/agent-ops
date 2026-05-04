@@ -228,8 +228,12 @@ func getWorkspacePath(sandboxName string) (string, error) {
 // startServe launches `opencode serve --port <port>` and waits until it prints its
 // listening URL, then drains the rest of its stdout silently.
 // The caller is responsible for killing the returned cmd when done.
-func startServe(port int, workdir string, yolo bool) (string, *exec.Cmd, error) {
-	cmd := exec.Command("opencode", "serve", "--port", strconv.Itoa(port))
+func startServe(port int, expose bool, workdir string, yolo bool) (string, *exec.Cmd, error) {
+	args := []string{"serve", "--port", strconv.Itoa(port)}
+	if expose {
+		args = append(args, "--hostname", "0.0.0.0")
+	}
+	cmd := exec.Command("opencode", args...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
@@ -575,7 +579,7 @@ func main() {
 			dir, _ = os.Getwd()
 		}
 		fmt.Printf("%s[loop]%s Starting opencode server on port %d...\n", colorBlue, colorReset, port)
-		url, serveCmd, err := startServe(port, dir, yolo)
+		url, serveCmd, err := startServe(port, expose, dir, yolo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to start opencode serve: %v\n", err)
 			os.Exit(1)
